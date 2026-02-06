@@ -21,11 +21,15 @@ import random
 import string
 import threading
 import re
+import os
+import logging
 import requests
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from telegram import Update
+from telegram.constants import ParseMode
+from telegram.helpers import escape_markdown
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -33,12 +37,21 @@ from telegram.ext import (
 )
 
 # =========================
+# LOGGING SETUP
+# =========================
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# =========================
 # CONFIGURATION
 # =========================
 
-BOT_TOKEN = "PASTE_YOUR_TELEGRAM_BOT_TOKEN"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "PASTE_YOUR_TELEGRAM_BOT_TOKEN")
 MAILTM_BASE = "https://api.mail.tm"
-PING_PORT = 8080
+PING_PORT = int(os.getenv("PING_PORT", 8080))
 
 OTP_REGEX = re.compile(r"\b\d{4,8}\b")
 
@@ -51,57 +64,80 @@ ACTIVE_SESSIONS: Dict[int, Dict] = {}
 
 
 def get_domains() -> List[str]:
-    response = requests.get(f"{MAILTM_BASE}/domains", timeout=10)
-    response.raise_for_status()
-    return [d["domain"] for d in response.json()["hydra:member"]]
+    try:
+        response = requests.get(f"{MAILTM_BASE}/domains", timeout=10)
+        response.raise_for_status()
+        return [d["domain"] for d in response.json().get("hydra:member", [])]
+    except requests.RequestException as e:
+        logger.error(f"Error fetching domains: {e}")
+        raise
 
 
 def create_account(address: str, password: str) -> None:
-    response = requests.post(
-        f"{MAILTM_BASE}/accounts",
-        json={"address": address, "password": password},
-        timeout=10,
-    )
-    response.raise_for_status()
+    try:
+        response = requests.post(
+            f"{MAILTM_BASE}/accounts",
+            json={"address": address, "password": password},
+            timeout=10,
+        )
+        response.raise_for_status()
+    except requests.RequestException as e:
+        logger.error(f"Error creating account: {e}")
+        raise
 
 
 def get_token(address: str, password: str) -> str:
-    response = requests.post(
-        f"{MAILTM_BASE}/token",
-        json={"address": address, "password": password},
-        timeout=10,
-    )
-    response.raise_for_status()
-    return response.json()["token"]
+    try:
+        response = requests.post(
+            f"{MAILTM_BASE}/token",
+            json={"address": address, "password": password},
+            timeout=10,
+        )
+        response.raise_for_status()
+        return response.json()["token"]
+    except requests.RequestException as e:
+        logger.error(f"Error getting token: {e}")
+        raise
 
 
-def fetch_messages(token: str):
-    response = requests.get(
-        f"{MAILTM_BASE}/messages",
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=10,
-    )
-    response.raise_for_status()
-    return response.json()["hydra:member"]
+def fetch_messages(token: str) -> List[Dict]:
+    try:
+        response = requests.get(
+            f"{MAILTM_BASE}/messages",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        return response.json().get("hydra:member", [])
+    except requests.RequestException as e:
+        logger.error(f"Error fetching messages: {e}")
+        return []
 
 
-def read_message(token: str, message_id: str):
-    response = requests.get(
-        f"{MAILTM_BASE}/messages/{message_id}",
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=10,
-    )
-    response.raise_for_status()
-    return response.json()
+def read_message(token: str, message_id: str) -> Dict:
+    try:
+        response = requests.get(
+            f"{MAILTM_BASE}/messages/{message_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as e:
+        logger.error(f"Error reading message: {e}")
+        return {}
 
 
-def delete_message(token: str, message_id: str):
-    response = requests.delete(
-        f"{MAILTM_BASE}/messages/{message_id}",
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=10,
-    )
-    response.raise_for_status()
+def delete_message(token: str, message_id: str) -> None:
+    try:
+        response = requests.delete(
+            f"{MAILTM_BASE}/messages/{message_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+        response.raise_for_status()
+    except requests.RequestException as e:
+        logger.error(f"Error deleting message: {e}")
 
 # =========================
 # UTILITIES
@@ -112,7 +148,9 @@ def random_string(length: int) -> str:
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=length))
 
 
-def detect_otp(text: str) -> str | None:
+def detect_otp(text: str) -> Optional[str]:
+    if not text:
+        return None
     match = OTP_REGEX.search(text)
     return match.group(0) if match else None
 
@@ -134,41 +172,57 @@ def decode_recovery_token(token: str) -> Dict:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "📧 Temporary Email Bot\n\n"
+        "📧 *Temporary Email Bot*\n\n"
         "/new – Create temp email\n"
         "/read – Read inbox\n"
         "/repair <token> – Recover inbox\n\n"
-        "⚠️ Save your recovery token carefully."
+        "⚠️ Save your recovery token carefully.",
+        parse_mode=ParseMode.MARKDOWN
     )
 
 
 async def new_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    domain = random.choice(get_domains())
-    email = f"{random_string(8)}@{domain}"
-    password = random_string(12)
+    await update.message.reply_text("⏳ Creating temporary email...")
 
-    create_account(email, password)
-    jwt_token = get_token(email, password)
+    try:
+        domains = get_domains()
+        if not domains:
+            await update.message.reply_text("❌ No domains available. Try again later.")
+            return
 
-    session = {
-        "email": email,
-        "password": password,
-        "token": jwt_token,
-    }
+        domain = random.choice(domains)
+        email = f"{random_string(8)}@{domain}"
+        password = random_string(12)
 
-    ACTIVE_SESSIONS[user_id] = session
-    recovery_token = encode_recovery_token(session)
+        create_account(email, password)
+        jwt_token = get_token(email, password)
 
-    await update.message.reply_text(
-        f"✅ Temp Email Created\n\n"
-        f"📮 `{email}`\n\n"
-        f"🔑 *Permanent Recovery Token*\n"
-        f"`{recovery_token}`\n\n"
-        f"Use `/repair <token>` if bot restarts.",
-        parse_mode="Markdown",
-    )
+        session = {
+            "email": email,
+            "password": password,
+            "token": jwt_token,
+        }
+
+        ACTIVE_SESSIONS[user_id] = session
+        recovery_token = encode_recovery_token(session)
+
+        # Escape Markdown characters in email and token
+        escaped_email = escape_markdown(email, version=1)
+        escaped_token = escape_markdown(recovery_token, version=1)
+
+        await update.message.reply_text(
+            f"✅ *Temp Email Created*\n\n"
+            f"📮 `{escaped_email}`\n\n"
+            f"🔑 *Permanent Recovery Token*\n"
+            f"`{escaped_token}`\n\n"
+            f"Use `/repair <token>` if bot restarts.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    except Exception as e:
+        logger.error(f"Error in new_email: {e}")
+        await update.message.reply_text("❌ An error occurred while creating email.")
 
 
 async def repair(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -180,15 +234,20 @@ async def repair(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         data = decode_recovery_token(context.args[0])
+        # Validate data structure
+        if not all(k in data for k in ("email", "password", "token")):
+            raise ValueError("Invalid token structure")
+
         ACTIVE_SESSIONS[user_id] = data
+        escaped_email = escape_markdown(data['email'], version=1)
+
+        await update.message.reply_text(
+            f"♻️ *Inbox recovered successfully*\n\n📮 `{escaped_email}`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
     except Exception:
         await update.message.reply_text("❌ Invalid recovery token.")
         return
-
-    await update.message.reply_text(
-        f"♻️ Inbox recovered successfully\n\n📮 `{data['email']}`",
-        parse_mode="Markdown",
-    )
 
 
 async def read(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -206,22 +265,32 @@ async def read(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No new emails.")
         return
 
-    output = ""
-    for msg in messages[:3]:
+    # Process messages (limit to 5 to avoid timeouts/limits)
+    for msg in messages[:5]:
         full = read_message(session["token"], msg["id"])
-        body = full.get("text", "")
+        if not full:
+            continue
+
+        body = full.get("text", "") or "No text content"
 
         otp = detect_otp(body)
-        otp_line = f"\n🔐 OTP: `{otp}`" if otp else ""
+        otp_line = f"\n🔐 *OTP*: `{escape_markdown(otp, version=1)}`" if otp else ""
 
-        output += (
-            f"📨 From: {full['from']['address']}\n"
-            f"📝 Subject: {full['subject']}{otp_line}\n\n"
+        from_addr = escape_markdown(full.get('from', {}).get('address', 'Unknown'), version=1)
+        subject = escape_markdown(full.get('subject', 'No Subject'), version=1)
+
+        output = (
+            f"📨 *From*: {from_addr}\n"
+            f"📝 *Subject*: {subject}{otp_line}\n\n"
         )
 
-        delete_message(session["token"], msg["id"])
+        try:
+            await update.message.reply_text(output, parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            logger.error(f"Error sending message: {e}")
+            await update.message.reply_text(f"📨 From: {full.get('from', {}).get('address')}\n(Content could not be displayed)")
 
-    await update.message.reply_text(output, parse_mode="Markdown")
+        delete_message(session["token"], msg["id"])
 
 # =========================
 # UPTIMEROBOT PING SERVER
@@ -234,9 +303,16 @@ class PingHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Bot is alive")
 
+    def log_message(self, format, *args):
+        return  # Suppress logging
 
 def start_ping_server():
-    HTTPServer(("0.0.0.0", PING_PORT), PingHandler).serve_forever()
+    try:
+        server = HTTPServer(("0.0.0.0", PING_PORT), PingHandler)
+        logger.info(f"Ping server started on port {PING_PORT}")
+        server.serve_forever()
+    except Exception as e:
+        logger.error(f"Failed to start ping server: {e}")
 
 # =========================
 # MAIN ENTRYPOINT
@@ -244,6 +320,9 @@ def start_ping_server():
 
 
 def main():
+    if BOT_TOKEN == "PASTE_YOUR_TELEGRAM_BOT_TOKEN":
+        print("⚠️  WARNING: BOT_TOKEN is not set. Please set the BOT_TOKEN environment variable or edit bot.py.")
+
     threading.Thread(target=start_ping_server, daemon=True).start()
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -252,6 +331,7 @@ def main():
     app.add_handler(CommandHandler("read", read))
     app.add_handler(CommandHandler("repair", repair))
 
+    print("Bot is running...")
     app.run_polling()
 
 
