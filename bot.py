@@ -22,6 +22,7 @@ import string
 import threading
 import re
 import os
+import sys
 import logging
 import requests
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -208,15 +209,14 @@ async def new_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ACTIVE_SESSIONS[user_id] = session
         recovery_token = encode_recovery_token(session)
 
-        # Escape Markdown characters in email and token
-        escaped_email = escape_markdown(email, version=1)
-        escaped_token = escape_markdown(recovery_token, version=1)
+        # Note: We do NOT escape email/token because they are inside backticks (code blocks)
+        # Markdown V1 code blocks treat contents literally (except backticks).
 
         await update.message.reply_text(
             f"✅ *Temp Email Created*\n\n"
-            f"📮 `{escaped_email}`\n\n"
+            f"📮 `{email}`\n\n"
             f"🔑 *Permanent Recovery Token*\n"
-            f"`{escaped_token}`\n\n"
+            f"`{recovery_token}`\n\n"
             f"Use `/repair <token>` if bot restarts.",
             parse_mode=ParseMode.MARKDOWN,
         )
@@ -239,10 +239,9 @@ async def repair(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raise ValueError("Invalid token structure")
 
         ACTIVE_SESSIONS[user_id] = data
-        escaped_email = escape_markdown(data['email'], version=1)
 
         await update.message.reply_text(
-            f"♻️ *Inbox recovered successfully*\n\n📮 `{escaped_email}`",
+            f"♻️ *Inbox recovered successfully*\n\n📮 `{data['email']}`",
             parse_mode=ParseMode.MARKDOWN,
         )
     except Exception:
@@ -274,7 +273,7 @@ async def read(update: Update, context: ContextTypes.DEFAULT_TYPE):
         body = full.get("text", "") or "No text content"
 
         otp = detect_otp(body)
-        otp_line = f"\n🔐 *OTP*: `{escape_markdown(otp, version=1)}`" if otp else ""
+        otp_line = f"\n🔐 *OTP*: `{otp}`" if otp else ""
 
         from_addr = escape_markdown(full.get('from', {}).get('address', 'Unknown'), version=1)
         subject = escape_markdown(full.get('subject', 'No Subject'), version=1)
@@ -320,8 +319,9 @@ def start_ping_server():
 
 
 def main():
-    if BOT_TOKEN == "PASTE_YOUR_TELEGRAM_BOT_TOKEN":
-        print("⚠️  WARNING: BOT_TOKEN is not set. Please set the BOT_TOKEN environment variable or edit bot.py.")
+    if not BOT_TOKEN or BOT_TOKEN == "PASTE_YOUR_TELEGRAM_BOT_TOKEN":
+        logger.critical("BOT_TOKEN is not set. Please set the BOT_TOKEN environment variable.")
+        sys.exit(1)
 
     threading.Thread(target=start_ping_server, daemon=True).start()
 
