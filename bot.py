@@ -50,7 +50,9 @@ logger = logging.getLogger(__name__)
 # CONFIGURATION
 # =========================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "PASTE_YOUR_TELEGRAM_BOT_TOKEN")
+# HARDCODED BOT TOKEN
+BOT_TOKEN = "PASTE_YOUR_TELEGRAM_BOT_TOKEN"
+
 MAILTM_BASE = "https://api.mail.tm"
 PING_PORT = int(os.getenv("PING_PORT", 8080))
 
@@ -320,7 +322,7 @@ def start_ping_server():
 
 def main():
     if not BOT_TOKEN or BOT_TOKEN == "PASTE_YOUR_TELEGRAM_BOT_TOKEN":
-        logger.critical("BOT_TOKEN is not set. Please set the BOT_TOKEN environment variable.")
+        logger.critical("BOT_TOKEN is not set. Please edit bot.py and set the BOT_TOKEN variable.")
         sys.exit(1)
 
     threading.Thread(target=start_ping_server, daemon=True).start()
