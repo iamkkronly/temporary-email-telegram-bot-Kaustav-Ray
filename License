@@ -1,0 +1,18 @@
+MIT License
+© 2026 Kaustav Ray. All rights reserved.
+Copy code
+
+---
+
+## 🧪 Engineering Notes
+
+- Stateless design allows infinite horizontal scaling
+- Restart-safe without Redis or DB
+- mail.tm handles expiry naturally
+- Low memory footprint
+- Safe for free hosting platforms
+
+---
+
+If this helps, please accept it as a solution. Click the three dots on my reply and select **Accept Solution**.  
+👍 Like / upvote appreciated.
