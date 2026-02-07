@@ -277,12 +277,19 @@ async def read(update: Update, context: ContextTypes.DEFAULT_TYPE):
         otp = detect_otp(body)
         otp_line = f"\n🔐 *OTP*: `{otp}`" if otp else ""
 
+        # Truncate body to avoid hitting Telegram's 4096 char limit
+        # Reduced to 2000 to allow room for Markdown escaping expansion
+        if len(body) > 2000:
+            body = body[:2000] + "... (truncated)"
+
         from_addr = escape_markdown(full.get('from', {}).get('address', 'Unknown'), version=1)
         subject = escape_markdown(full.get('subject', 'No Subject'), version=1)
+        body_escaped = escape_markdown(body, version=1)
 
         output = (
             f"📨 *From*: {from_addr}\n"
-            f"📝 *Subject*: {subject}{otp_line}\n\n"
+            f"📝 *Subject*: {subject}\n"
+            f"📜 *Message*:\n{body_escaped}{otp_line}\n\n"
         )
 
         try:
